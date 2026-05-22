@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>活動簽到系統</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #f0f4f8; min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; padding: 24px 16px;
+  }
+  h1 { font-size: 1.4rem; color: #1a202c; margin-bottom: 6px; }
+  .stats { font-size: 0.9rem; color: #718096; margin-bottom: 24px; }
+  .stats span { font-weight: bold; color: #3182ce; }
+  .camera-wrap {
+    width: 100%; max-width: 360px; position: relative;
+    border-radius: 16px; overflow: hidden; background: #1a202c;
+    aspect-ratio: 1; box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .scan-overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .scan-box {
+    width: 200px; height: 200px;
+    border: 3px solid rgba(255,255,255,0.8);
+    border-radius: 12px;
+    box-shadow: 0 0 0 1000px rgba(0,0,0,0.4);
+  }
+  .scan-line {
+    position: absolute; width: 180px; height: 2px;
+    background: #63b3ed;
+    animation: scanMove 2s linear infinite;
+  }
+  @keyframes scanMove {
+    0%   { top: calc(50% - 95px); }
+    50%  { top: calc(50% + 93px); }
+    100% { top: calc(50% - 95px); }
+  }
+  .cam-hint {
+    color: #a0aec0; font-size: 0.85rem;
+    text-align: center; padding: 20px; line-height: 1.8;
+  }
+  .result-box {
+    margin-top: 20px; width: 100%; max-width: 360px;
+    padding: 18px 20px; border-radius: 14px;
+    font-size: 1.05rem; font-weight: 600; text-align: center;
+    min-height: 64px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #e2e8f0; color: #a0aec0;
+  }
+  .result-box.success  { background: #c6f6d5; color: #276749; }
+  .result-box.duplicate { background: #fefcbf; color: #744210; }
+  .result-box.notfound  { background: #fed7d7; color: #9b2335; }
+  .extra-tag { margin-top: 6px; font-size: 0.82rem; opacity: 0.8; }
+  .manual-section { margin-top: 16px; width: 100%; max-width: 360px; }
+  .divider { text-align: center; font-size: 0.8rem; color: #a0aec0; margin-bottom: 8px; }
+  .manual-section input {
+    width: 100%; padding: 12px 16px;
+    border: 2px solid #e2e8f0; border-radius: 10px;
+    font-size: 1rem; outline: none; background: white;
+  }
+  .manual-section input:focus { border-color: #3182ce; }
+  .manual-section button {
+    margin-top: 8px; width: 100%; padding: 13px;
+    background: #3182ce; color: white; border: none;
+    border-radius: 10px; font-size: 1rem; font-weight: 600;
+  }
+  .manual-section button:active { background: #2c5282; }
+</style>
+</head>
+<body>
+
+<h1>🎫 活動簽到系統</h1>
+<div class="stats">已簽到 <span id="checked">-</span> / <span id="total">-</span> 人</div>
+
+<div class="camera-wrap" id="cameraWrap">
+  <div class="cam-hint" id="camHint">相機啟動中...<br>請允許相機權限</div>
+</div>
+
+<div id="result" class="result-box">請將 QR Code 對準框內</div>
+
+<div class="manual-section">
+  <div class="divider">或手動輸入編號</div>
+  <input type="text" id="manualInput" placeholder="輸入條碼編號" autocomplete="off"/>
+  <button onclick="manualCheckIn()">確認簽到</button>
+</div>
+
+<script>
+  const API_URL = 'https://script.google.com/macros/s/AKfycbzbMBkSk1sc8LN7pa98FxVCQNtWhsf__srenQWEhWm1VsVnGVuoSjquVIzuEkedADzcmg/exec';
+  let isProcessing = false;
+
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';
+  s.onload = startCamera;
+  s.onerror = () => {
+    document.getElementById('camHint').innerHTML = '⚠️ 無法載入掃碼套件<br>請使用下方手動輸入';
+  };
+  document.head.appendChild(s);
+
+  function startCamera() {
+    const wrap = document.getElementById('cameraWrap');
+    const hint = document.getElementById('camHint');
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      hint.innerHTML = '⚠️ 此瀏覽器不支援相機<br>請改用 Safari 開啟';
+      return;
+    }
+
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    })
+    .then(stream => {
+      hint.remove();
+      const video = document.createElement('video');
+      video.autoplay = true; video.playsInline = true; video.muted = true;
+      video.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+      const overlay = document.createElement('div');
+      overlay.className = 'scan-overlay';
+      overlay.innerHTML = '<div class="scan-box"></div><div class="scan-line"></div>';
+      wrap.appendChild(video);
+      wrap.appendChild(overlay);
+      video.srcObject = stream;
+      video.play();
+      video.addEventListener('loadedmetadata', () => scanLoop(video));
+    })
+    .catch(err => {
+      hint.innerHTML = `⚠️ 無法啟動相機<br><small>${err.message}</small><br>請至設定 → Safari → 相機 → 允許`;
+    });
+  }
+
+  function scanLoop(video) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    function tick() {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+        if (code && !isProcessing) {
+          isProcessing = true;
+          handleCheckIn(code.data);
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    tick();
+  }
+
+  function callAPI(action, id = null) {
+    const body = id ? { action, id } : { action };
+    return fetch(API_URL, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'text/plain' }
+    }).then(r => r.json());
+  }
+
+  function handleCheckIn(id) {
+    const resultBox = document.getElementById('result');
+    resultBox.className = 'result-box';
+    resultBox.innerHTML = '比對中...';
+
+    callAPI('checkIn', id)
+      .then(res => {
+        resultBox.className = 'result-box ' + res.status;
+        resultBox.innerHTML = res.message +
+          (res.extra ? `<div class="extra-tag">${res.extra}</div>` : '');
+        updateStats();
+        setTimeout(() => {
+          isProcessing = false;
+          resultBox.className = 'result-box';
+          resultBox.innerHTML = '請將 QR Code 對準框內';
+        }, 2500);
+      })
+      .catch(() => {
+        resultBox.className = 'result-box notfound';
+        resultBox.innerHTML = '⚠️ 連線錯誤，請重試';
+        isProcessing = false;
+      });
+  }
+
+  function manualCheckIn() {
+    const input = document.getElementById('manualInput');
+    const id = input.value.trim();
+    if (!id || isProcessing) return;
+    input.value = '';
+    handleCheckIn(id);
+  }
+
+  document.getElementById('manualInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') manualCheckIn();
+  });
+
+  function updateStats() {
+    callAPI('getStats')
+      .then(res => {
+        document.getElementById('checked').textContent = res.checked;
+        document.getElementById('total').textContent = res.total;
+      }).catch(() => {});
+  }
+
+  updateStats();
+</script>
+</body>
+</html>
